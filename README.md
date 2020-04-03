@@ -1,1 +1,1 @@
-# big-query-airflow-logger
+# BigQuery logger handler for Airflow
