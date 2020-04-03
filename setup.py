@@ -9,14 +9,13 @@ with open('requirements.txt') as f:
    requires = f.readlines()
 
 setup(
-   name='bigquerylogger',
+   name='airflow-bigquerylogger',
+   version='0.1.0',
    description='BigQuery logger handler for Airflow',
    long_description=long_description,
    long_description_content_type="text/markdown",
    author='Gabriele Diener',
    author_email='gabriele.diener@gmail.com',
-   se_scm_version={"version_scheme": "post-release"},
-   setup_requires=["setuptools_scm"],
    install_requires=requires,
    packages=find_packages(),
    classifiers=[
