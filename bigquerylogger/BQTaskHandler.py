@@ -69,8 +69,14 @@ class BQTaskHandler(GCSTaskHandler, LoggingMixin):
             self.log.error(log)
             log_count = 0
 
-        metadata['end_of_log'] = (log_count == 0 or self.parameters['limit'] == 0)
+        metadata['end_of_log'] = (
+            log_count == 0 or
+            self.parameters['limit'] == 0 or
+            log_count < self.parameters['limit'])
         metadata['offset'] += log_count
+
+        if metadata['end_of_log']:
+           log += "\n*** Log streaming has ended!\n"
 
         return log, metadata
 
@@ -98,8 +104,8 @@ class BQTaskHandler(GCSTaskHandler, LoggingMixin):
 
         if (self.parameters['limit'] > 0):
             query += """
-                    LIMIT %(limit)d
-                    OFFSET %(offset)d
+                    LIMIT %(limit)s
+                    OFFSET %(offset)s
                     """
 
             self.parameters['offset'] = int(offset)
