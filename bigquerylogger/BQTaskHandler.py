@@ -5,6 +5,7 @@ from cached_property import cached_property
 from airflow.configuration import conf
 from airflow.utils.log.logging_mixin import LoggingMixin
 from airflow.utils.log.gcs_task_handler import GCSTaskHandler
+from airflow.contrib.executors.kubernetes_executor import AirflowKubernetesScheduler
 
 
 class BQTaskHandler(GCSTaskHandler, LoggingMixin):
@@ -19,12 +20,11 @@ class BQTaskHandler(GCSTaskHandler, LoggingMixin):
         super(BQTaskHandler, self).__init__(base_log_folder, gcs_log_folder, filename_template)
         self._bq_cursor = None
 
-        self.dataset_name = dataset_name
-        self.query_limit = query_limit
+        self.dataset = dataset_name
 
-        self.where_statement = ""
-
-        self.closed = False
+        self.parameters = {
+            'limit': int(query_limit)
+        }
 
     @cached_property
     def bq_cursor(self):
@@ -34,7 +34,8 @@ class BQTaskHandler(GCSTaskHandler, LoggingMixin):
 
             return BigQueryHook(
                 bigquery_conn_id = remote_conn_id,
-                use_legacy_sql = False).get_conn().cursor()
+                use_legacy_sql = False
+            ).get_conn().cursor()
         except Exception as e:
             self.log.error(
                 'Could not create a BigQueryHook with connection id '
@@ -43,27 +44,13 @@ class BQTaskHandler(GCSTaskHandler, LoggingMixin):
 
     def set_context(self, ti):
         super(BQTaskHandler, self).set_context(ti)
+        self._set_parameters(ti)
 
-        self.where_statement = """
-            labels.k8s_pod_dag_id = '%s' AND
-            labels.k8s_pod_task_id = '%s' AND
-            labels.k8s_pod_execution_date = '%s' AND
-            labels.k8s_pod_try_number = '%d'
-            """ % (ti.dag_id, ti.task_id, ti.execution_date.isoformat(), ti.try_number)
-
-    def close(self):
-        if self.closed:
-            return
-
-        super(BQTaskHandler, self).close()
-
-        self.log.info("""*** Unable to delete logs from BigQuery {} because:\n\n
-                         *** Rows that were written to a table recently via streaming
-                         (using the tabledata.insertall method) cannot be modified using
-                         UPDATE, DELETE, or MERGE statements.
-                         I recommend setting up a table retention!\n""".format(self.dataset_name))
-
-        self.closed = True
+    def _set_parameters(self, ti, try_number):
+        self.parameters['dag_id'] = ti.dag_id
+        self.parameters['task_id'] = ti.task_id
+        self.parameters['try_number'] = str(try_number if try_number else ti.try_number)
+        self.parameters['execution_date'] = AirflowKubernetesScheduler._datetime_to_label_safe_datestring(ti.execution_date)
 
     def _bq_read(self, metadata=None):
         if not metadata:
@@ -72,13 +59,20 @@ class BQTaskHandler(GCSTaskHandler, LoggingMixin):
         if 'offset' not in metadata:
             metadata['offset'] = 0
 
-        log = self._bq_query(metadata['offset'])
-        log_count = len(log)
+        try:
+            log = self._bq_query(metadata['offset'])
+            log_count = len(log)
+            log = "".join(log)
+        except Exception as e:
+            log = '*** Unable to read remote log on BigQuery from {}\n*** {}\n\n'.format(
+                self.dataset, str(e))
+            self.log.error(log)
+            log_count = 0
 
-        metadata['end_of_log'] = (log_count == 0)
+        metadata['end_of_log'] = (log_count == 0 or self.parameters['limit'] == 0)
         metadata['offset'] += log_count
 
-        return "".join(log), metadata
+        return log, metadata
 
     def _bq_query(self, offset):
         """
@@ -87,20 +81,30 @@ class BQTaskHandler(GCSTaskHandler, LoggingMixin):
         :param offset: the query offset
         :type offset: int
         """
+
         query = """
                 SELECT timestamp, textPayload
                 FROM `%s.std*`
-                WHERE %s
+                """ % self.dataset
+
+        query += """
+                WHERE
+                    labels.k8s_pod_dag_id = %(dag_id)s AND
+                    labels.k8s_pod_task_id = %(task_id)s AND
+                    labels.k8s_pod_execution_date = %(execution_date)s AND
+                    labels.k8s_pod_try_number = %(try_number)s
                 ORDER BY timestamp ASC
-                OFFSET %d
                 """
 
-        if (self.query_limit > 0):
-            query += 'LIMIT %d' % self.query_limit
+        if (self.parameters['limit'] > 0):
+            query += """
+                    LIMIT %(limit)d
+                    OFFSET %(offset)d
+                    """
 
-        self.bq_cursor.execute(query, (self.dataset_name,
-                                       self.where_statement,
-                                       offset))
+            self.parameters['offset'] = int(offset)
+
+        self.bq_cursor.execute(query, self.parameters)
 
         return self.format_log(self.bq_cursor.fetchall())
 
@@ -114,6 +118,11 @@ class BQTaskHandler(GCSTaskHandler, LoggingMixin):
         :param metadata: log metadata,
                          can be used for steaming log reading and auto-tailing.
         """
+
+        # Explicitly set query parameters is necessary as the given
+        # task instance might be different than task instance passed in
+        # in set_context method.
+        self._set_parameters(ti, try_number)
 
         log_relative_path = self._render_filename(ti, try_number)
         remote_loc = os.path.join(self.remote_base, log_relative_path)
