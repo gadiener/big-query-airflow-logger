@@ -10,7 +10,7 @@ with open('requirements.txt') as f:
 
 setup(
    name='airflow-bigquerylogger',
-   version='0.4.3',
+   version='0.4.5',
    description='BigQuery logger handler for Airflow',
    long_description=long_description,
    long_description_content_type="text/markdown",

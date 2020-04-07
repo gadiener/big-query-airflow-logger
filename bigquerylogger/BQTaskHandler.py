@@ -46,7 +46,7 @@ class BQTaskHandler(GCSTaskHandler, LoggingMixin):
         super(BQTaskHandler, self).set_context(ti)
         self._set_parameters(ti)
 
-    def _set_parameters(self, ti, try_number):
+    def _set_parameters(self, ti, try_number=0):
         self.parameters['dag_id'] = ti.dag_id
         self.parameters['task_id'] = ti.task_id
         self.parameters['try_number'] = str(try_number if try_number else ti.try_number)
@@ -71,8 +71,7 @@ class BQTaskHandler(GCSTaskHandler, LoggingMixin):
 
         metadata['end_of_log'] = (
             log_count == 0 or
-            self.parameters['limit'] == 0 or
-            log_count < self.parameters['limit'])
+            self.parameters['limit'] == 0)
         metadata['offset'] += log_count
 
         if metadata['end_of_log']:
